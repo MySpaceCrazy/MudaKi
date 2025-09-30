@@ -8,7 +8,7 @@ export default function Navbar() {
       <div className="container mx-auto flex items-center justify-between px-4 py-3">
         <Link href="/" className="flex items-center gap-3">
           <Image
-            src="/logo.jpg"
+            src="/mudaki-logo.jpg"
             alt="Logo Mudaki"
             width={36}
             height={36}
