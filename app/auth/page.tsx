@@ -11,27 +11,28 @@ import {
 } from "firebase/auth";
 
 export default function AuthPage() {
-  const [phone, setPhone] = useState("");            // ex.: 11988887777 ou +5511988887777
+  // Estados de UI
+  const [phone, setPhone] = useState("");                // ex.: 11 98888-7777, +55 11 98888-7777, etc.
   const [code, setCode] = useState("");
   const [codeSent, setCodeSent] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Evita recriar recaptcha em navegações
+  // Evita recriar o reCAPTCHA em navegações dentro do app
   const recaptchaReadyRef = useRef(false);
 
   useEffect(() => {
-    // Garante que o RecaptchaVerifier exista apenas 1x
+    // Garante que o RecaptchaVerifier exista apenas 1x (lado do cliente)
     if (typeof window === "undefined") return;
     if (recaptchaReadyRef.current) return;
 
     try {
-      // Se já existir em window, reaproveita
+      // Reaproveita se já houver em window
       // @ts-ignore
       if (!window.recaptchaVerifier) {
         // @ts-ignore
-        window.recaptchaVerifier = new RecaptchaVerifier(auth, "recaptcha", {
+        window.recaptchaVerifier = new RecaptchaVerifier(auth, "recaptcha-container", {
           size: "invisible",
         });
       }
@@ -41,17 +42,18 @@ export default function AuthPage() {
     }
   }, []);
 
+  // Converte entradas BR comuns para E.164
   function toE164(raw: string) {
     // remove tudo que não for número
     let digits = raw.replace(/\D/g, "");
 
-    // Se não começar com 55 e tiver 10~11 dígitos (BR), prefixa +55
-    if (!digits.startsWith("55")) {
-      digits = "55" + digits;
-    }
+    // se não começar com 55 (Brasil), prefixa
+    if (!digits.startsWith("55")) digits = "55" + digits;
+
     return `+${digits}`;
   }
 
+  // Enviar SMS
   async function onSendSms(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -70,23 +72,26 @@ export default function AuthPage() {
       const appVerifier = window.recaptchaVerifier as RecaptchaVerifier;
       const result = (await signInWithPhoneNumber(auth, e164, appVerifier)) as ConfirmationResult;
 
-      // Guardamos para confirmar depois
+      // Guarda para confirmar depois
       // @ts-ignore
       window._confirmationResult = result;
       setCodeSent(true);
       setMsg("SMS enviado! Confira o código no seu telefone.");
     } catch (err: any) {
       console.error(err);
-      setError(
-        err?.message?.includes("requests are blocked")
+      // mensagens mais amigáveis
+      const message =
+        err?.message?.includes("requests are blocked") ||
+        err?.code === "auth/too-many-requests"
           ? "O reCAPTCHA bloqueou a solicitação. Recarregue a página e tente novamente."
-          : "Não foi possível enviar o SMS. Verifique o número e tente de novo."
-      );
+          : "Não foi possível enviar o SMS. Verifique o número e tente de novo.";
+      setError(message);
     } finally {
       setLoading(false);
     }
   }
 
+  // Confirmar código
   async function onVerifyCode(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -102,7 +107,6 @@ export default function AuthPage() {
       // @ts-ignore
       const confirmation: ConfirmationResult = window._confirmationResult;
       const cred = await confirmation.confirm(code);
-
       setMsg(`Autenticado! Bem-vindo, ${cred.user.phoneNumber ?? "usuário"}.`);
     } catch (err: any) {
       console.error(err);
@@ -112,6 +116,7 @@ export default function AuthPage() {
     }
   }
 
+  // Google OAuth
   async function onGoogle() {
     setError(null);
     setMsg(null);
@@ -145,6 +150,8 @@ export default function AuthPage() {
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             disabled={loading}
+            autoComplete="tel"
+            inputMode="tel"
           />
           <button
             type="submit"
@@ -163,6 +170,8 @@ export default function AuthPage() {
             value={code}
             onChange={(e) => setCode(e.target.value)}
             disabled={loading}
+            inputMode="numeric"
+            autoComplete="one-time-code"
           />
           <button
             type="submit"
@@ -174,7 +183,7 @@ export default function AuthPage() {
         </form>
       )}
 
-      {/* Google */}
+      {/* Botão Google */}
       <button
         onClick={onGoogle}
         className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-60"
@@ -183,8 +192,8 @@ export default function AuthPage() {
         Entrar com Google
       </button>
 
-      {/* Recaptcha invisível */}
-      <div id="recaptcha" />
+      {/* Recaptcha invisível — o ID DEVE bater com o usado no RecaptchaVerifier */}
+      <div id="recaptcha-container" />
     </main>
   );
 }
