@@ -1,0 +1,21 @@
+// Regras simples para MVP; ajuste para produção
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow write: if request.auth.uid == uid;
+    }
+    match /requests/{id} {
+      allow read: if true; // lista pública de solicitações abertas
+      allow create: if isSignedIn();
+      allow update, delete: if resource.data.clientUid == request.auth.uid;
+    }
+    match /proposals/{id} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if request.auth.uid == resource.data.driverUid;
+    }
+  }
+}
