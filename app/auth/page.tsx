@@ -10,13 +10,13 @@ export default function AuthPage() {
   const [confirmation, setConfirmation] = useState<any>(null)
 
   const onSubmitPhone = async (e: React.FormEvent) => {
-    e.preventDefault()
-    // @ts-ignore
-    window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha', { size: 'invisible' })
-    const result = await signInWithPhoneNumber(auth, phone, window.recaptchaVerifier)
-    setConfirmation(result)
-    setCodeSent(true)
-  }
+  e.preventDefault()
+  const verifier = new RecaptchaVerifier(auth, "recaptcha", { size: "invisible" })
+  const result = await signInWithPhoneNumber(auth, phone, verifier)
+  setConfirmation(result)
+  setCodeSent(true)
+}
+
   const onVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault()
     await confirmation.confirm(code)
