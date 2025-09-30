@@ -1,12 +1,6 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { Loader } from "@googlemaps/js-api-loader"; // <— import correto
-
-declare global {
-  interface Window {
-    google: any;
-  }
-}
+import { Loader } from "@googlemaps/js-api-loader";
 
 export default function MapPicker({
   onChange,
@@ -19,27 +13,31 @@ export default function MapPicker({
     if (!mapRef.current) return;
 
     const init = async () => {
+      // Cria o loader (funciona em versões diferentes do pacote)
       const loader = new Loader({
         apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
         libraries: ["places"],
       });
 
-      const google = await loader.load();
+      // Algumas versões têm .load(); outras mudaram a tipagem — forçamos o any
+      await (loader as any).load();
 
+      const g = (globalThis as any).google;
       const center = { lat: -23.55052, lng: -46.633308 };
-      const map = new google.maps.Map(mapRef.current, {
+
+      const map = new g.maps.Map(mapRef.current as HTMLElement, {
         center,
         zoom: 12,
         disableDefaultUI: false,
       });
 
-      const marker = new google.maps.Marker({
+      const marker = new g.maps.Marker({
         position: center,
         map,
         draggable: true,
       });
 
-      const geocoder = new google.maps.Geocoder();
+      const geocoder = new g.maps.Geocoder();
 
       const update = (pos: any) => {
         geocoder.geocode({ location: pos }, (res: any) => {
