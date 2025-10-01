@@ -24,7 +24,7 @@ export default function MapPicker({
 
       await loader.load(); // habilita window.google
 
-      // 2) Importa libs de forma funcional (já disponível após loader.load())
+      // 2) Importa libs pelo importLibrary (já disponível após loader.load())
       const { Map } = (await google.maps.importLibrary("maps")) as google.maps.MapsLibrary;
       const { Marker } = (await google.maps.importLibrary("marker")) as google.maps.MarkerLibrary;
       const { Geocoder } = (await google.maps.importLibrary("geocoding")) as google.maps.GeocodingLibrary;
@@ -46,26 +46,39 @@ export default function MapPicker({
       const geocoder = new Geocoder();
 
       const update = (pos: google.maps.LatLng | null) => {
-        if (!pos) return;
+        if (!pos) return; // garante contra null/undefined
         geocoder.geocode({ location: pos }, (res) => {
           const address = res?.[0]?.formatted_address ?? "";
           onChange({ lat: pos.lat(), lng: pos.lng(), address });
         });
       };
 
-      marker.addListener("dragend", () => update(marker.getPosition()));
+      // dragend: pega posição, valida e chama update
+      marker.addListener("dragend", () => {
+        const p = marker.getPosition();
+        if (!p) return;
+        update(p);
+      });
+
+      // click no mapa: valida e atualiza
       map.addListener("click", (e: google.maps.MapMouseEvent) => {
         if (!e.latLng) return;
         marker.setPosition(e.latLng);
         update(e.latLng);
       });
 
-      // dispara 1ª leitura
-      update(marker.getPosition());
+      // 1ª leitura (somente se existir posição)
+      const initial = marker.getPosition();
+      if (initial) update(initial);
     };
 
     init();
   }, [onChange]);
 
-  return <div ref={mapRef} className="h-80 w-full rounded-2xl overflow-hidden bg-black/10" />;
+  return (
+    <div
+      ref={mapRef}
+      className="h-80 w-full rounded-2xl overflow-hidden bg-black/10"
+    />
+  );
 }
