@@ -31,23 +31,21 @@ export default function MapRoute({
     if (!mapDivRef.current) return;
 
     (async () => {
-      // carrega API (evita duplicar: o loader é idempotente)
       const loader = new Loader({
         apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
-        libraries: ["places"], // ok manter "places" – não atrapalha
+        libraries: ["places"],
       });
       await loader.load();
 
-      // importa libs
       const { Map } = (await google.maps.importLibrary("maps")) as google.maps.MapsLibrary;
       const { DirectionsService, DirectionsRenderer } =
         (await google.maps.importLibrary("routes")) as google.maps.RoutesLibrary;
-      const { Marker } = (await google.maps.importLibrary("marker")) as google.maps.MarkerLibrary;
+      const { Marker } =
+        (await google.maps.importLibrary("marker")) as google.maps.MarkerLibrary;
 
       // centro padrão (SP)
       const center = { lat: -23.55052, lng: -46.633308 };
 
-      // cria mapa (nota: garante HTMLElement)
       mapRef.current = new Map(mapDivRef.current as HTMLElement, {
         center,
         zoom: 12,
@@ -56,11 +54,10 @@ export default function MapRoute({
         fullscreenControl: true,
       });
 
-      // service/renderer
       directionsSvcRef.current = new DirectionsService();
       directionsRef.current = new DirectionsRenderer({
         map: mapRef.current!,
-        suppressMarkers: true, // markers customizados
+        suppressMarkers: true,
         polylineOptions: {
           strokeColor: "#7c3aed",
           strokeOpacity: 0.9,
@@ -68,7 +65,6 @@ export default function MapRoute({
         },
       });
 
-      // markers (verde/origem, vermelho/destino)
       startMarkerRef.current = new Marker({
         map: mapRef.current!,
         icon: {
@@ -80,6 +76,7 @@ export default function MapRoute({
           strokeWeight: 2,
         },
       });
+
       endMarkerRef.current = new Marker({
         map: mapRef.current!,
         icon: {
@@ -92,7 +89,7 @@ export default function MapRoute({
         },
       });
 
-      // cria o badge Distância/Tempo
+      // badge Distância/Tempo no topo do mapa
       const ctrl = document.createElement("div");
       ctrl.style.padding = "8px 14px";
       ctrl.style.borderRadius = "999px";
@@ -106,25 +103,44 @@ export default function MapRoute({
       ctrl.style.backdropFilter = "blur(6px)";
       ctrl.innerText = "Distância: —";
       distanceCtrlRef.current = ctrl;
-
-      // 👉 usa ControlPosition global (não do import)
       mapRef.current.controls[google.maps.ControlPosition.TOP_CENTER].push(ctrl);
     })();
   }, []);
 
-  // recalcula rota quando origem/destino mudam
+  // atualiza mapa/rota
   useEffect(() => {
     const svc = directionsSvcRef.current;
     const renderer = directionsRef.current;
     const map = mapRef.current;
 
-    if (!svc || !renderer || !map) return;
-    if (!origin || !destination) {
-      // limpa visual (types exigem assert)
-      renderer.set("directions", null as any);
-      if (distanceCtrlRef.current) distanceCtrlRef.current.innerText = "Distância: —";
+    if (!map) return;
+
+    // 1) Sem origem e destino -> só limpa tudo
+    if (!origin && !destination) {
+      renderer?.set("directions", null as any);
+      distanceCtrlRef.current && (distanceCtrlRef.current.innerText = "Distância: —");
+      startMarkerRef.current?.setPosition(null);
+      endMarkerRef.current?.setPosition(null);
       return;
     }
+
+    // 2) Só ORIGEM -> centraliza no ponto e coloca o marcador verde
+    if (origin && !destination) {
+      renderer?.set("directions", null as any);
+      distanceCtrlRef.current && (distanceCtrlRef.current.innerText = "Distância: —");
+
+      const pos = new google.maps.LatLng(origin.lat, origin.lng);
+      startMarkerRef.current?.setPosition(pos);
+      startMarkerRef.current?.setTitle(origin.address ?? "Origem");
+      endMarkerRef.current?.setPosition(null);
+
+      map.setCenter(pos);
+      map.setZoom(15);
+      return;
+    }
+
+    // 3) ORIGEM + DESTINO -> calcula rota
+    if (!svc || !renderer || !origin || !destination) return;
 
     svc.route(
       {
@@ -135,24 +151,21 @@ export default function MapRoute({
       },
       (result, status) => {
         if (status !== google.maps.DirectionsStatus.OK || !result) {
-          console.warn("Falha ao obter rota:", status);
           renderer.set("directions", null as any);
-          if (distanceCtrlRef.current) distanceCtrlRef.current.innerText = "Distância: —";
+          distanceCtrlRef.current && (distanceCtrlRef.current.innerText = "Distância: —");
           return;
         }
 
         renderer.setDirections(result);
 
-        // ajusta viewport
         const leg = result.routes[0]?.legs?.[0];
         if (leg?.start_location && leg?.end_location) {
           const bounds = new google.maps.LatLngBounds();
           bounds.extend(leg.start_location);
           bounds.extend(leg.end_location);
-          map.fitBounds(bounds); // sem padding p/ evitar problema de tipagem
+          map.fitBounds(bounds);
         }
 
-        // atualiza markers
         if (startMarkerRef.current && leg?.start_location) {
           startMarkerRef.current.setPosition(leg.start_location);
           startMarkerRef.current.setTitle(origin.address ?? "Origem");
@@ -162,7 +175,6 @@ export default function MapRoute({
           endMarkerRef.current.setTitle(destination.address ?? "Destino");
         }
 
-        // distância/tempo
         const dText = leg?.distance?.text ?? "—";
         const dMeters = leg?.distance?.value ?? 0;
         const durText = leg?.duration?.text ?? undefined;
