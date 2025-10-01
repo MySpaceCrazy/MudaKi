@@ -1,62 +1,105 @@
+// components/MapPicker.tsx
 "use client";
+
 import { useEffect, useRef } from "react";
-import { Loader } from "@googlemaps/js-api-loader";
+
+type MapsLib = google.maps.MapsLibrary;
+type PlacesLib = google.maps.PlacesLibrary;
 
 export default function MapPicker({
   onChange,
+  initialCenter = { lat: -23.55052, lng: -46.633308 }, // São Paulo
+  initialZoom = 12,
 }: {
   onChange: (v: { lat: number; lng: number; address: string }) => void;
+  initialCenter?: { lat: number; lng: number };
+  initialZoom?: number;
 }) {
   const mapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!mapRef.current) return;
 
-    const init = async () => {
-      // Cria o loader (funciona em versões diferentes do pacote)
-      const loader = new Loader({
-        apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
+    let map: google.maps.Map | null = null;
+    let marker: google.maps.Marker | null = null;
+    let clickListener: google.maps.MapsEventListener | null = null;
+
+    async function init() {
+      // 1) Configura a chave e libraries (API funcional)
+      // @ts-ignore: objeto global após carregamento do script no layout
+      google.maps.setOptions({
+        apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY,
         libraries: ["places"],
       });
 
-      // Algumas versões têm .load(); outras mudaram a tipagem — forçamos o any
-      await (loader as any).load();
+      // 2) Carrega as libraries necessárias
+      const [{ Map }, _placesLib] = (await Promise.all([
+        // @ts-ignore
+        google.maps.importLibrary("maps") as Promise<MapsLib>,
+        // @ts-ignore
+        google.maps.importLibrary("places") as Promise<PlacesLib>,
+      ])) as [MapsLib, PlacesLib];
 
-      const g = (globalThis as any).google;
-      const center = { lat: -23.55052, lng: -46.633308 };
-
-      const map = new g.maps.Map(mapRef.current as HTMLElement, {
-        center,
-        zoom: 12,
+      // 3) Cria o mapa
+      map = new Map(mapRef.current as HTMLElement, {
+        center: initialCenter,
+        zoom: initialZoom,
         disableDefaultUI: false,
       });
 
-      const marker = new g.maps.Marker({
-        position: center,
+      // 4) Marcador
+      marker = new google.maps.Marker({
+        position: initialCenter,
         map,
-        draggable: true,
+        draggable: false, // deixe true se quiser arrastar
       });
 
-      const geocoder = new g.maps.Geocoder();
+      const geocoder = new google.maps.Geocoder();
 
-      const update = (pos: any) => {
-        geocoder.geocode({ location: pos }, (res: any) => {
-          const address = res?.[0]?.formatted_address ?? "";
-          onChange({ lat: pos.lat(), lng: pos.lng(), address });
-        });
+      // Função padrão para atualizar endereço e avisar o pai
+      const pushChange = async (lat: number, lng: number) => {
+        let address = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+        try {
+          const { results } = await geocoder.geocode({ location: { lat, lng } });
+          if (results?.[0]?.formatted_address) {
+            address = results[0].formatted_address;
+          }
+        } catch {
+          // mantém o fallback
+        }
+        onChange({ lat, lng, address });
       };
 
-      marker.addListener("dragend", () => update(marker.getPosition()));
-      map.addListener("click", (e: any) => {
-        marker.setPosition(e.latLng);
-        update(e.latLng);
+      // 5) Clique no mapa -> move marcador + reverse geocoding
+      clickListener = map.addListener("click", async (e: google.maps.MapMouseEvent) => {
+        if (!e.latLng) return;
+        const lat = e.latLng.lat();
+        const lng = e.latLng.lng();
+
+        marker!.setPosition({ lat, lng });
+        map!.panTo({ lat, lng });
+
+        await pushChange(lat, lng);
       });
 
-      update(marker.getPosition());
+      // Dispara o valor inicial
+      await pushChange(initialCenter.lat, initialCenter.lng);
+    }
+
+    init().catch(console.error);
+
+    // cleanup
+    return () => {
+      if (clickListener) clickListener.remove();
+      marker = null;
+      map = null;
     };
+  }, [initialCenter, initialZoom, onChange]);
 
-    init();
-  }, [onChange]);
-
-  return <div ref={mapRef} className="h-80 w-full rounded-2xl overflow-hidden" />;
+  return (
+    <div
+      ref={mapRef}
+      className="h-80 w-full rounded-2xl overflow-hidden border border-white/10"
+    />
+  );
 }
