@@ -12,7 +12,7 @@ import {
 
 export default function AuthPage() {
   // Estados de UI
-  const [phone, setPhone] = useState("");                // ex.: 11 98888-7777, +55 11 98888-7777, etc.
+  const [phone, setPhone] = useState(""); // ex.: 11 98888-7777, +55 11 98888-7777, etc.
   const [code, setCode] = useState("");
   const [codeSent, setCodeSent] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -46,10 +46,8 @@ export default function AuthPage() {
   function toE164(raw: string) {
     // remove tudo que não for número
     let digits = raw.replace(/\D/g, "");
-
     // se não começar com 55 (Brasil), prefixa
     if (!digits.startsWith("55")) digits = "55" + digits;
-
     return `+${digits}`;
   }
 
@@ -68,9 +66,25 @@ export default function AuthPage() {
 
     try {
       setLoading(true);
+
+      // Garante que o verificador exista
       // @ts-ignore
-      const appVerifier = window.recaptchaVerifier as RecaptchaVerifier;
-      const result = (await signInWithPhoneNumber(auth, e164, appVerifier)) as ConfirmationResult;
+      let appVerifier: RecaptchaVerifier = window.recaptchaVerifier;
+      // @ts-ignore (fallback se algo limpou o objeto)
+      if (!appVerifier) {
+        // @ts-ignore
+        appVerifier = new RecaptchaVerifier(auth, "recaptcha-container", {
+          size: "invisible",
+        });
+        // @ts-ignore
+        window.recaptchaVerifier = appVerifier;
+      }
+
+      const result = (await signInWithPhoneNumber(
+        auth,
+        e164,
+        appVerifier
+      )) as ConfirmationResult;
 
       // Guarda para confirmar depois
       // @ts-ignore
@@ -78,14 +92,41 @@ export default function AuthPage() {
       setCodeSent(true);
       setMsg("SMS enviado! Confira o código no seu telefone.");
     } catch (err: any) {
-      console.error(err);
-      // mensagens mais amigáveis
-      const message =
-        err?.message?.includes("requests are blocked") ||
-        err?.code === "auth/too-many-requests"
-          ? "O reCAPTCHA bloqueou a solicitação. Recarregue a página e tente novamente."
-          : "Não foi possível enviar o SMS. Verifique o número e tente de novo.";
-      setError(message);
+      // 🔎 Log detalhado pro console do browser (ajuda a debugar no Vercel)
+      console.error("sendSMS error:", err?.code, err?.message);
+
+      // Tenta resetar o widget invisível se existir
+      try {
+        // @ts-ignore
+        const widgetId = await window.recaptchaVerifier?.render?.();
+        // @ts-ignore
+        if (typeof window.grecaptcha?.reset === "function") {
+          // @ts-ignore
+          window.grecaptcha.reset(widgetId);
+        }
+      } catch {}
+
+      // Mensagens mais amigáveis por código
+      let friendly = "Não foi possível enviar o SMS. Verifique o número e tente de novo.";
+      switch (err?.code) {
+        case "auth/invalid-phone-number":
+        case "auth/missing-phone-number":
+          friendly = "Número inválido. Revise o DDD e o número (ex.: 11 98888-7777).";
+          break;
+        case "auth/invalid-app-credential":
+          friendly = "Falha no reCAPTCHA. Recarregue a página e tente de novo.";
+          break;
+        case "auth/too-many-requests":
+          friendly = "Muitas tentativas. Aguarde um pouco e tente novamente.";
+          break;
+        case "auth/quota-exceeded":
+          friendly = "Limite de envio de SMS excedido por enquanto. Tente mais tarde.";
+          break;
+        case "auth/network-request-failed":
+          friendly = "Falha de rede. Verifique sua conexão e tente novamente.";
+          break;
+      }
+      setError(friendly);
     } finally {
       setLoading(false);
     }
@@ -109,7 +150,7 @@ export default function AuthPage() {
       const cred = await confirmation.confirm(code);
       setMsg(`Autenticado! Bem-vindo, ${cred.user.phoneNumber ?? "usuário"}.`);
     } catch (err: any) {
-      console.error(err);
+      console.error("confirmCode error:", err?.code, err?.message);
       setError("Código inválido. Tente novamente.");
     } finally {
       setLoading(false);
@@ -125,7 +166,7 @@ export default function AuthPage() {
       await signInWithPopup(auth, new GoogleAuthProvider());
       setMsg("Autenticado com Google!");
     } catch (err: any) {
-      console.error(err);
+      console.error("googleSignIn error:", err?.code, err?.message);
       setError("Falha no login com Google.");
     } finally {
       setLoading(false);
