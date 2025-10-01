@@ -1,13 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { auth } from "@/lib/firebase";
 import {
   RecaptchaVerifier,
   signInWithPhoneNumber,
   signInWithPopup,
+  signInWithRedirect,
   GoogleAuthProvider,
   ConfirmationResult,
+  onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
+  signOut,
 } from "firebase/auth";
 
 export default function AuthPage() {
@@ -19,8 +25,28 @@ export default function AuthPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const router = useRouter();
+
   // Evita recriar o reCAPTCHA em navegações dentro do app
   const recaptchaReadyRef = useRef(false);
+
+  // Observa sessão + define persistência local
+  useEffect(() => {
+    setPersistence(auth, browserLocalPersistence).catch((e) =>
+      console.warn("persistência local falhou:", e)
+    );
+
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setCurrentUser(u);
+      if (u) {
+        console.log("Autenticado:", u.uid, u.email ?? u.phoneNumber);
+        // Se quiser redirecionar pós-login:
+        // router.push("/");
+      }
+    });
+    return () => unsub();
+  }, [router]);
 
   useEffect(() => {
     // Garante que o RecaptchaVerifier exista apenas 1x (lado do cliente)
@@ -84,7 +110,7 @@ export default function AuthPage() {
         console.log("recaptchaVerifier re-criado:", appVerifier);
       }
 
-      // Apenas para inspeção em produção: confirma que o script do reCAPTCHA está carregado
+      // Apenas para inspeção em produção
       // @ts-ignore
       if (typeof window.grecaptcha === "undefined") {
         console.warn("grecaptcha ainda não está disponível no window.");
@@ -103,10 +129,10 @@ export default function AuthPage() {
       setMsg("SMS enviado! Confira o código no seu telefone.");
       console.log("SMS enviado para:", e164);
     } catch (err: any) {
-      // 🔎 Log detalhado no console (importante para ver o code/message no Vercel)
+      // 🔎 Log detalhado no console
       console.error("sendSMS error:", err?.code, err?.message, err);
 
-      // Tenta resetar o widget invisível (alguns erros pedem novo token)
+      // Tenta resetar o widget invisível
       try {
         // @ts-ignore
         const widgetId = await window.recaptchaVerifier?.render?.();
@@ -144,7 +170,6 @@ export default function AuthPage() {
           break;
       }
 
-      // Exibe friendly + código (para facilitar debug visual)
       setError(`${friendly}${err?.code ? ` [${err.code}]` : ""}`);
     } finally {
       setLoading(false);
@@ -169,6 +194,7 @@ export default function AuthPage() {
       const cred = await confirmation.confirm(code);
       setMsg(`Autenticado! Bem-vindo, ${cred.user.phoneNumber ?? "usuário"}.`);
       console.log("Login por SMS OK:", cred.user.uid, cred.user.phoneNumber);
+      // router.push("/"); // opcional
     } catch (err: any) {
       console.error("confirmCode error:", err?.code, err?.message, err);
       setError(`Código inválido. Tente novamente.${err?.code ? ` [${err.code}]` : ""}`);
@@ -177,7 +203,7 @@ export default function AuthPage() {
     }
   }
 
-  // Google OAuth
+  // Google OAuth (popup -> fallback redirect)
   async function onGoogle() {
     setError(null);
     setMsg(null);
@@ -186,7 +212,13 @@ export default function AuthPage() {
       await signInWithPopup(auth, new GoogleAuthProvider());
       setMsg("Autenticado com Google!");
       console.log("Login Google OK");
+      // router.push("/"); // opcional
     } catch (err: any) {
+      if (err?.code === "auth/popup-blocked" || err?.code === "auth/popup-closed-by-user") {
+        console.warn("Popup bloqueado/fechado. Tentando redirect…");
+        await signInWithRedirect(auth, new GoogleAuthProvider());
+        return;
+      }
       console.error("googleSignIn error:", err?.code, err?.message, err);
       setError(`Falha no login com Google.${err?.code ? ` [${err.code}]` : ""}`);
     } finally {
@@ -197,6 +229,22 @@ export default function AuthPage() {
   return (
     <main className="min-h-[70vh] flex flex-col items-center justify-start gap-6 pt-16">
       <h1 className="text-2xl font-semibold">Entrar ou Cadastrar</h1>
+
+      {/* Sessão atual + sair (útil pra teste) */}
+      {currentUser ? (
+        <p className="text-sm opacity-80">
+          Logado como <b>{currentUser.email ?? currentUser.phoneNumber}</b>{" "}
+          <button
+            onClick={() => signOut(auth)}
+            className="ml-2 underline"
+            title="Sair"
+          >
+            Sair
+          </button>
+        </p>
+      ) : (
+        <p className="text-sm opacity-60">Você ainda não está autenticado.</p>
+      )}
 
       {/* Mensagens */}
       {msg && <p className="text-green-400">{msg}</p>}
