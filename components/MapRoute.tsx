@@ -1,298 +1,187 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Loader } from "@googlemaps/js-api-loader";
 
-type Place = { lat: number; lng: number; address: string };
-
-type Props = {
-  onOriginChange: (v: Place | null) => void;
-  onDestinationChange: (v: Place | null) => void;
-  onDistanceChange?: (meters: number | null) => void;
-};
+export type Place = { lat: number; lng: number; address?: string };
 
 export default function MapRoute({
-  onOriginChange,
-  onDestinationChange,
-  onDistanceChange,
-}: Props) {
-  // UI
-  const [originText, setOriginText] = useState("");
-  const [destinationText, setDestinationText] = useState("");
-
-  // Refs de mapa/serviços
+  origin,
+  destination,
+  onDistance,
+}: {
+  origin: Place | null;
+  destination: Place | null;
+  onDistance?: (meters: number, text: string, durationText?: string) => void;
+}) {
   const mapDivRef = useRef<HTMLDivElement | null>(null);
+
+  // instâncias do Maps
   const mapRef = useRef<google.maps.Map | null>(null);
-  const geocoderRef = useRef<google.maps.Geocoder | null>(null);
   const directionsSvcRef = useRef<google.maps.DirectionsService | null>(null);
   const directionsRef = useRef<google.maps.DirectionsRenderer | null>(null);
+  const startMarkerRef = useRef<google.maps.Marker | null>(null);
+  const endMarkerRef = useRef<google.maps.Marker | null>(null);
 
-  // Markers (ícones auxiliares quando ainda não há rota)
-  const originMarkerRef = useRef<google.maps.Marker | null>(null);
-  const destinationMarkerRef = useRef<google.maps.Marker | null>(null);
+  // badge de distância/tempo
+  const distanceCtrlRef = useRef<HTMLDivElement | null>(null);
 
-  // Últimos pontos válidos
-  const originPointRef = useRef<google.maps.LatLngLiteral | null>(null);
-  const destinationPointRef = useRef<google.maps.LatLngLiteral | null>(null);
-
-  // Helpers -------------------------------------------------------------------
-  const updateDistanceFromRoute = (result: google.maps.DirectionsResult) => {
-    if (!onDistanceChange) return;
-    let meters = 0;
-    const leg = result.routes?.[0]?.legs?.[0];
-    if (leg?.distance?.value != null) {
-      meters = leg.distance.value;
-    }
-    onDistanceChange(meters || null);
-  };
-
-  const drawRouteIfPossible = async () => {
-    if (!originPointRef.current || !destinationPointRef.current) return;
-    if (!directionsSvcRef.current || !directionsRef.current) return;
-
-    const req: google.maps.DirectionsRequest = {
-      origin: originPointRef.current,
-      destination: destinationPointRef.current,
-      travelMode: google.maps.TravelMode.DRIVING,
-      provideRouteAlternatives: false,
-    };
-
-    directionsSvcRef.current.route(req, (result, status) => {
-      if (status === "OK" && result) {
-        directionsRef.current!.setDirections(result);
-        originMarkerRef.current?.setMap(null);
-        destinationMarkerRef.current?.setMap(null);
-        updateDistanceFromRoute(result);
-
-        // Ajusta bounds para a rota
-        const bounds = new google.maps.LatLngBounds();
-        result.routes[0].overview_path.forEach((p) => bounds.extend(p));
-        mapRef.current?.fitBounds(bounds);
-      }
-    });
-  };
-
-  const geocodeLatLng = async (latLng: google.maps.LatLngLiteral) =>
-    new Promise<string>((resolve) => {
-      geocoderRef.current?.geocode({ location: latLng }, (res) => {
-        resolve(res?.[0]?.formatted_address ?? "");
-      });
-    });
-
-  // Inicialização --------------------------------------------------------------
+  // init
   useEffect(() => {
-    let mounted = true;
+    if (!mapDivRef.current) return;
 
     (async () => {
-      // Evita SSR e garante que o container existe
-      if (typeof window === "undefined") return;
-      if (!mapDivRef.current) return;
-
-      // 1) Carrega Google Maps
+      // carrega API (evita duplicar: o loader é idempotente)
       const loader = new Loader({
         apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
-        libraries: ["places"],
+        libraries: ["places"], // ok manter "places" – não atrapalha
       });
       await loader.load();
 
-      const [{ Map }, { Marker }, { Geocoder }, , { Autocomplete }] =
-        await Promise.all([
-          google.maps.importLibrary("maps") as Promise<google.maps.MapsLibrary>,
-          google.maps.importLibrary(
-            "marker"
-          ) as Promise<google.maps.MarkerLibrary>,
-          google.maps.importLibrary(
-            "geocoding"
-          ) as Promise<google.maps.GeocodingLibrary>,
-          google.maps.importLibrary(
-            "routes"
-          ) as Promise<google.maps.RoutesLibrary>, // apenas para typings
-          google.maps.importLibrary(
-            "places"
-          ) as Promise<google.maps.PlacesLibrary>,
-        ]);
+      // importa libs
+      const { Map } = (await google.maps.importLibrary("maps")) as google.maps.MapsLibrary;
+      const { DirectionsService, DirectionsRenderer } =
+        (await google.maps.importLibrary("routes")) as google.maps.RoutesLibrary;
+      const { Marker } = (await google.maps.importLibrary("marker")) as google.maps.MarkerLibrary;
 
-      if (!mounted) return;
+      // centro padrão (SP)
+      const center = { lat: -23.55052, lng: -46.633308 };
 
-      geocoderRef.current = new Geocoder();
-
-      // 2) Mapa base  (<<< AQUI o non-null assertion resolve o erro)
-      mapRef.current = new Map(mapDivRef.current!, {
-        center: { lat: -23.55052, lng: -46.633308 }, // SP fallback
+      // cria mapa (nota: garante HTMLElement)
+      mapRef.current = new Map(mapDivRef.current as HTMLElement, {
+        center,
         zoom: 12,
         disableDefaultUI: false,
+        streetViewControl: true,
+        fullscreenControl: true,
       });
 
-      // 3) Services de rota
-      directionsSvcRef.current = new google.maps.DirectionsService();
-      directionsRef.current = new google.maps.DirectionsRenderer({
+      // service/renderer
+      directionsSvcRef.current = new DirectionsService();
+      directionsRef.current = new DirectionsRenderer({
         map: mapRef.current!,
-        suppressMarkers: true, // usaremos nossos markers
+        suppressMarkers: true, // markers customizados
+        polylineOptions: {
+          strokeColor: "#7c3aed",
+          strokeOpacity: 0.9,
+          strokeWeight: 6,
+        },
       });
 
-      // 4) Autocomplete (origem/destino)
-      const originInput = document.getElementById(
-        "origin-input"
-      ) as HTMLInputElement | null;
-      const destInput = document.getElementById(
-        "destination-input"
-      ) as HTMLInputElement | null;
-
-      const originAC =
-        originInput && new Autocomplete(originInput, { fields: ["geometry", "formatted_address"] });
-      const destAC =
-        destInput && new Autocomplete(destInput, { fields: ["geometry", "formatted_address"] });
-
-      originAC?.addListener("place_changed", async () => {
-        const place = originAC.getPlace();
-        const loc = place?.geometry?.location;
-        if (!loc) return;
-
-        const point = { lat: loc.lat(), lng: loc.lng() };
-        originPointRef.current = point;
-        const addr = place.formatted_address || (await geocodeLatLng(point));
-        setOriginText(addr);
-        onOriginChange({ ...point, address: addr });
-
-        // mostra marker de origem enquanto não tiver rota
-        originMarkerRef.current?.setMap(null);
-        originMarkerRef.current = new Marker({
-          map: mapRef.current!,
-          position: point,
-          label: "A",
-        });
-
-        drawRouteIfPossible();
+      // markers (verde/origem, vermelho/destino)
+      startMarkerRef.current = new Marker({
+        map: mapRef.current!,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 7,
+          fillColor: "#22c55e",
+          fillOpacity: 1,
+          strokeColor: "#0f172a",
+          strokeWeight: 2,
+        },
+      });
+      endMarkerRef.current = new Marker({
+        map: mapRef.current!,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 7,
+          fillColor: "#ef4444",
+          fillOpacity: 1,
+          strokeColor: "#0f172a",
+          strokeWeight: 2,
+        },
       });
 
-      destAC?.addListener("place_changed", async () => {
-        const place = destAC.getPlace();
-        const loc = place?.geometry?.location;
-        if (!loc) return;
+      // cria o badge Distância/Tempo
+      const ctrl = document.createElement("div");
+      ctrl.style.padding = "8px 14px";
+      ctrl.style.borderRadius = "999px";
+      ctrl.style.background =
+        "linear-gradient(180deg,rgba(124,58,237,.18), rgba(124,58,237,.08))";
+      ctrl.style.border = "1px solid rgba(124,58,237,.35)";
+      ctrl.style.color = "#efeaff";
+      ctrl.style.fontWeight = "600";
+      ctrl.style.fontSize = "14px";
+      ctrl.style.boxShadow = "0 10px 30px rgba(0,0,0,.25)";
+      ctrl.style.backdropFilter = "blur(6px)";
+      ctrl.innerText = "Distância: —";
+      distanceCtrlRef.current = ctrl;
 
-        const point = { lat: loc.lat(), lng: loc.lng() };
-        destinationPointRef.current = point;
-        const addr = place.formatted_address || (await geocodeLatLng(point));
-        setDestinationText(addr);
-        onDestinationChange({ ...point, address: addr });
+      // 👉 usa ControlPosition global (não do import)
+      mapRef.current.controls[google.maps.ControlPosition.TOP_CENTER].push(ctrl);
+    })();
+  }, []);
 
-        destinationMarkerRef.current?.setMap(null);
-        destinationMarkerRef.current = new Marker({
-          map: mapRef.current!,
-          position: point,
-          label: "B",
-        });
+  // recalcula rota quando origem/destino mudam
+  useEffect(() => {
+    const svc = directionsSvcRef.current;
+    const renderer = directionsRef.current;
+    const map = mapRef.current;
 
-        drawRouteIfPossible();
-      });
+    if (!svc || !renderer || !map) return;
+    if (!origin || !destination) {
+      // limpa visual (types exigem assert)
+      renderer.set("directions", null as any);
+      if (distanceCtrlRef.current) distanceCtrlRef.current.innerText = "Distância: —";
+      return;
+    }
 
-      // 5) Click no mapa para preencher origem/destino em sequência
-      mapRef.current.addListener("click", async (e: google.maps.MapMouseEvent) => {
-        const latLng = e.latLng;
-        if (!latLng) return;
-        const point = { lat: latLng.lat(), lng: latLng.lng() };
-
-        // Se não tem origem -> define origem; senão define destino
-        if (!originPointRef.current) {
-          originPointRef.current = point;
-          const addr = await geocodeLatLng(point);
-          setOriginText(addr);
-          onOriginChange({ ...point, address: addr });
-
-          originMarkerRef.current?.setMap(null);
-          originMarkerRef.current = new Marker({
-            map: mapRef.current!,
-            position: point,
-            label: "A",
-          });
-        } else {
-          destinationPointRef.current = point;
-          const addr = await geocodeLatLng(point);
-          setDestinationText(addr);
-          onDestinationChange({ ...point, address: addr });
-
-          destinationMarkerRef.current?.setMap(null);
-          destinationMarkerRef.current = new Marker({
-            map: mapRef.current!,
-            position: point,
-            label: "B",
-          });
+    svc.route(
+      {
+        origin: { lat: origin.lat, lng: origin.lng },
+        destination: { lat: destination.lat, lng: destination.lng },
+        travelMode: google.maps.TravelMode.DRIVING,
+        provideRouteAlternatives: false,
+      },
+      (result, status) => {
+        if (status !== google.maps.DirectionsStatus.OK || !result) {
+          console.warn("Falha ao obter rota:", status);
+          renderer.set("directions", null as any);
+          if (distanceCtrlRef.current) distanceCtrlRef.current.innerText = "Distância: —";
+          return;
         }
 
-        drawRouteIfPossible();
-      });
-    })();
+        renderer.setDirections(result);
 
-    return () => {
-      mounted = false;
-    };
-  }, [onOriginChange, onDestinationChange, onDistanceChange]);
+        // ajusta viewport
+        const leg = result.routes[0]?.legs?.[0];
+        if (leg?.start_location && leg?.end_location) {
+          const bounds = new google.maps.LatLngBounds();
+          bounds.extend(leg.start_location);
+          bounds.extend(leg.end_location);
+          map.fitBounds(bounds); // sem padding p/ evitar problema de tipagem
+        }
 
-  // Geolocalização para origem
-  const handleUseMyLocation = () => {
-    if (!navigator.geolocation || !mapRef.current) return;
-    navigator.geolocation.getCurrentPosition(
-      async ({ coords }) => {
-        const point = { lat: coords.latitude, lng: coords.longitude };
-        const addr = await geocodeLatLng(point);
-        setOriginText(addr);
-        onOriginChange({ ...point, address: addr });
+        // atualiza markers
+        if (startMarkerRef.current && leg?.start_location) {
+          startMarkerRef.current.setPosition(leg.start_location);
+          startMarkerRef.current.setTitle(origin.address ?? "Origem");
+        }
+        if (endMarkerRef.current && leg?.end_location) {
+          endMarkerRef.current.setPosition(leg.end_location);
+          endMarkerRef.current.setTitle(destination.address ?? "Destino");
+        }
 
-        originPointRef.current = point;
-        originMarkerRef.current?.setMap(null);
-        originMarkerRef.current = new google.maps.Marker({
-          map: mapRef.current!,
-          position: point,
-          label: "A",
-        });
+        // distância/tempo
+        const dText = leg?.distance?.text ?? "—";
+        const dMeters = leg?.distance?.value ?? 0;
+        const durText = leg?.duration?.text ?? undefined;
 
-        // centraliza no usuário
-        mapRef.current!.setCenter(point);
-        mapRef.current!.setZoom(14);
+        if (distanceCtrlRef.current) {
+          distanceCtrlRef.current.innerText = durText
+            ? `Distância: ${dText} • Tempo: ${durText}`
+            : `Distância: ${dText}`;
+        }
 
-        // tenta desenhar rota caso já exista destino
-        drawRouteIfPossible();
-      },
-      () => {
-        // ignore errors silently
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
+        onDistance?.(dMeters, dText, durText);
+      }
     );
-  };
+  }, [origin, destination, onDistance]);
 
   return (
-    <div className="space-y-3">
-      {/* Inputs */}
-      <div className="flex flex-col md:flex-row gap-2">
-        <input
-          id="origin-input"
-          className="flex-1 bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
-          placeholder="Origem (digite e selecione)"
-          value={originText}
-          onChange={(e) => setOriginText(e.target.value)}
-        />
-        <button
-          type="button"
-          onClick={handleUseMyLocation}
-          className="px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white"
-        >
-          Usar localização
-        </button>
-      </div>
-
-      <input
-        id="destination-input"
-        className="w-full bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
-        placeholder="Destino (digite e selecione)"
-        value={destinationText}
-        onChange={(e) => setDestinationText(e.target.value)}
-      />
-
-      {/* Mapa */}
-      <div
-        ref={mapDivRef}
-        className="h-96 w-full rounded-2xl overflow-hidden bg-black/10"
-      />
-    </div>
+    <div
+      ref={mapDivRef}
+      className="h-80 w-full rounded-2xl overflow-hidden bg-black/10"
+    />
   );
 }
