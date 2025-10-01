@@ -1,27 +1,33 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { setKey, setLibraries, importLibrary } from "@googlemaps/js-api-loader";
+import { setOptions } from "@googlemaps/js-api-loader";
+
+type MapValue = { lat: number; lng: number; address: string };
 
 export default function MapPicker({
   onChange,
 }: {
-  onChange: (v: { lat: number; lng: number; address: string }) => void;
+  onChange: (v: MapValue) => void;
 }) {
   const mapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || typeof window === "undefined") return;
 
     const init = async () => {
-      // ✅ Defina a chave e as bibliotecas antes de importar
-      setKey(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string);
-      setLibraries(["places"]);
+      // 1) Configura API Key + libs (cast para contornar tipos do pacote)
+      setOptions({
+        apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
+        libraries: ["places"],
+      } as any);
 
-      // ✅ Importe as libs de forma funcional (API nova)
-      const { Map } = (await importLibrary("maps")) as google.maps.MapsLibrary;
-      const { Marker } = (await importLibrary("marker")) as google.maps.MarkerLibrary;
-      const { Geocoder } = (await importLibrary("geocoding")) as google.maps.GeocodingLibrary;
+      // 2) Importa as libs usando a API funcional
+      const [{ Map }, { Marker }, { Geocoder }] = await Promise.all([
+        google.maps.importLibrary("maps") as Promise<typeof google.maps>,
+        google.maps.importLibrary("marker") as Promise<typeof google.maps>,
+        google.maps.importLibrary("geocoding") as Promise<typeof google.maps>,
+      ]);
 
       const center = { lat: -23.55052, lng: -46.633308 };
 
@@ -39,21 +45,23 @@ export default function MapPicker({
 
       const geocoder = new Geocoder();
 
-      const update = async (pos: google.maps.LatLng) => {
-        const { results } = await geocoder.geocode({ location: pos });
-        const address = results?.[0]?.formatted_address ?? "";
-        onChange({ lat: pos.lat(), lng: pos.lng(), address });
+      const update = (pos: google.maps.LatLng | google.maps.LatLngLiteral) => {
+        const loc =
+          pos instanceof google.maps.LatLng ? pos : new google.maps.LatLng(pos);
+        geocoder.geocode({ location: loc }, (results, status) => {
+          const address =
+            status === "OK" ? results?.[0]?.formatted_address ?? "" : "";
+          onChange({ lat: loc.lat(), lng: loc.lng(), address });
+        });
       };
 
       marker.addListener("dragend", () => update(marker.getPosition()!));
       map.addListener("click", (e: google.maps.MapMouseEvent) => {
-        if (e.latLng) {
-          marker.setPosition(e.latLng);
-          update(e.latLng);
-        }
+        if (!e.latLng) return;
+        marker.setPosition(e.latLng);
+        update(e.latLng);
       });
 
-      // Primeira leitura
       update(marker.getPosition()!);
     };
 
@@ -63,7 +71,7 @@ export default function MapPicker({
   return (
     <div
       ref={mapRef}
-      className="h-80 w-full rounded-2xl overflow-hidden border border-white/10"
+      className="h-80 w-full rounded-2xl overflow-hidden bg-black/10"
     />
   );
 }
