@@ -1,296 +1,298 @@
-// components/MapRoute.tsx
 "use client";
 
-import {useEffect, useRef, useState} from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader } from "@googlemaps/js-api-loader";
 
-type LatLng = { lat: number; lng: number };
-export type RouteValue = {
-  origin: { address: string; location: LatLng } | null;
-  destination: { address: string; location: LatLng } | null;
-  distanceMeters: number | null; // total em metros
+type Place = { lat: number; lng: number; address: string };
+
+type Props = {
+  onOriginChange: (v: Place | null) => void;
+  onDestinationChange: (v: Place | null) => void;
+  onDistanceChange?: (meters: number | null) => void;
 };
 
 export default function MapRoute({
-  onChange,
-  defaultOrigin,
-  defaultDestination,
-}: {
-  onChange?: (v: RouteValue) => void;
-  defaultOrigin?: string;
-  defaultDestination?: string;
-}) {
-  const mapRef = useRef<HTMLDivElement>(null);
-  const originInputRef = useRef<HTMLInputElement>(null);
-  const destInputRef = useRef<HTMLInputElement>(null);
+  onOriginChange,
+  onDestinationChange,
+  onDistanceChange,
+}: Props) {
+  // UI
+  const [originText, setOriginText] = useState("");
+  const [destinationText, setDestinationText] = useState("");
 
-  const [state, setState] = useState<RouteValue>({
-    origin: null,
-    destination: null,
-    distanceMeters: null,
-  });
+  // Refs de mapa/serviços
+  const mapDivRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const geocoderRef = useRef<google.maps.Geocoder | null>(null);
+  const directionsSvcRef = useRef<google.maps.DirectionsService | null>(null);
+  const directionsRef = useRef<google.maps.DirectionsRenderer | null>(null);
 
-  // Helpers para notificar o pai
-  function pushChange(patch: Partial<RouteValue>) {
-    setState((prev) => {
-      const next = { ...prev, ...patch };
-      onChange?.(next);
-      return next;
+  // Markers (ícones auxiliares quando ainda não há rota)
+  const originMarkerRef = useRef<google.maps.Marker | null>(null);
+  const destinationMarkerRef = useRef<google.maps.Marker | null>(null);
+
+  // Últimos pontos válidos
+  const originPointRef = useRef<google.maps.LatLngLiteral | null>(null);
+  const destinationPointRef = useRef<google.maps.LatLngLiteral | null>(null);
+
+  // Helpers -------------------------------------------------------------------
+  const updateDistanceFromRoute = (result: google.maps.DirectionsResult) => {
+    if (!onDistanceChange) return;
+    let meters = 0;
+    const leg = result.routes?.[0]?.legs?.[0];
+    if (leg?.distance?.value != null) {
+      meters = leg.distance.value;
+    }
+    onDistanceChange(meters || null);
+  };
+
+  const drawRouteIfPossible = async () => {
+    if (!originPointRef.current || !destinationPointRef.current) return;
+    if (!directionsSvcRef.current || !directionsRef.current) return;
+
+    const req: google.maps.DirectionsRequest = {
+      origin: originPointRef.current,
+      destination: destinationPointRef.current,
+      travelMode: google.maps.TravelMode.DRIVING,
+      provideRouteAlternatives: false,
+    };
+
+    directionsSvcRef.current.route(req, (result, status) => {
+      if (status === "OK" && result) {
+        directionsRef.current!.setDirections(result);
+        originMarkerRef.current?.setMap(null);
+        destinationMarkerRef.current?.setMap(null);
+        updateDistanceFromRoute(result);
+
+        // Ajusta bounds para a rota
+        const bounds = new google.maps.LatLngBounds();
+        result.routes[0].overview_path.forEach((p) => bounds.extend(p));
+        mapRef.current?.fitBounds(bounds);
+      }
     });
-  }
+  };
 
+  const geocodeLatLng = async (latLng: google.maps.LatLngLiteral) =>
+    new Promise<string>((resolve) => {
+      geocoderRef.current?.geocode({ location: latLng }, (res) => {
+        resolve(res?.[0]?.formatted_address ?? "");
+      });
+    });
+
+  // Inicialização --------------------------------------------------------------
   useEffect(() => {
-    if (!mapRef.current) return;
-
-    let map: google.maps.Map;
-    let directionsService: google.maps.DirectionsService;
-    let directionsRenderer: google.maps.DirectionsRenderer;
-    let originAutocomplete: google.maps.places.Autocomplete;
-    let destAutocomplete: google.maps.places.Autocomplete;
-    let geocoder: google.maps.Geocoder;
-
     let mounted = true;
 
-    async function init() {
+    (async () => {
+      // Evita SSR e garante que o container existe
+      if (typeof window === "undefined") return;
+      if (!mapDivRef.current) return;
+
+      // 1) Carrega Google Maps
       const loader = new Loader({
         apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
         libraries: ["places"],
       });
       await loader.load();
 
-      const { Map } = (await google.maps.importLibrary("maps")) as google.maps.MapsLibrary;
-      const { Autocomplete } = (await google.maps.importLibrary("places")) as google.maps.PlacesLibrary;
-      const { Geocoder } = (await google.maps.importLibrary("geocoding")) as google.maps.GeocodingLibrary;
-      const { DirectionsService, DirectionsRenderer } =
-        (await google.maps.importLibrary("routes")) as unknown as {
-          DirectionsService: typeof google.maps.DirectionsService;
-          DirectionsRenderer: typeof google.maps.DirectionsRenderer;
-        };
+      const [{ Map }, { Marker }, { Geocoder }, , { Autocomplete }] =
+        await Promise.all([
+          google.maps.importLibrary("maps") as Promise<google.maps.MapsLibrary>,
+          google.maps.importLibrary(
+            "marker"
+          ) as Promise<google.maps.MarkerLibrary>,
+          google.maps.importLibrary(
+            "geocoding"
+          ) as Promise<google.maps.GeocodingLibrary>,
+          google.maps.importLibrary(
+            "routes"
+          ) as Promise<google.maps.RoutesLibrary>, // apenas para typings
+          google.maps.importLibrary(
+            "places"
+          ) as Promise<google.maps.PlacesLibrary>,
+        ]);
 
       if (!mounted) return;
 
-      // Mapa inicial em SP
-      const center = { lat: -23.55052, lng: -46.633308 };
+      geocoderRef.current = new Geocoder();
 
-      map = new Map(mapRef.current!, {
-        center,
+      // 2) Mapa base  (<<< AQUI o non-null assertion resolve o erro)
+      mapRef.current = new Map(mapDivRef.current!, {
+        center: { lat: -23.55052, lng: -46.633308 }, // SP fallback
         zoom: 12,
         disableDefaultUI: false,
       });
 
-      geocoder = new Geocoder();
-      directionsService = new DirectionsService();
-      directionsRenderer = new DirectionsRenderer({ map });
-
-      // Autocomplete nos inputs
-      if (originInputRef.current) {
-        originAutocomplete = new Autocomplete(originInputRef.current, { fields: ["formatted_address", "geometry"] });
-        originAutocomplete.addListener("place_changed", () => {
-          const place = originAutocomplete.getPlace();
-          const loc = place.geometry?.location;
-          if (!loc) return;
-          pushChange({
-            origin: {
-              address: place.formatted_address || originInputRef.current!.value,
-              location: { lat: loc.lat(), lng: loc.lng() },
-            },
-          });
-          tryRoute();
-        });
-      }
-
-      if (destInputRef.current) {
-        destAutocomplete = new Autocomplete(destInputRef.current, { fields: ["formatted_address", "geometry"] });
-        destAutocomplete.addListener("place_changed", () => {
-          const place = destAutocomplete.getPlace();
-          const loc = place.geometry?.location;
-          if (!loc) return;
-          pushChange({
-            destination: {
-              address: place.formatted_address || destInputRef.current!.value,
-              location: { lat: loc.lat(), lng: loc.lng() },
-            },
-          });
-          tryRoute();
-        });
-      }
-
-      // Defaults via texto (opcional)
-      if (defaultOrigin && originInputRef.current) {
-        originInputRef.current.value = defaultOrigin;
-      }
-      if (defaultDestination && destInputRef.current) {
-        destInputRef.current.value = defaultDestination;
-      }
-
-      async function tryRoute() {
-        const { origin, destination } = stateRef.current; // usar ref para estado mais recente
-        if (!origin || !destination) return;
-
-        const res = await directionsService.route({
-          origin: origin.location,
-          destination: destination.location,
-          travelMode: google.maps.TravelMode.DRIVING,
-        });
-
-        directionsRenderer.setDirections(res);
-
-        // soma da distância dos trechos
-        const route = res.routes[0];
-        const legs = route?.legs || [];
-        const meters = legs.reduce((acc, leg) => acc + (leg.distance?.value || 0), 0);
-
-        pushChange({ distanceMeters: meters });
-      }
-
-      // manter estado mais novo dentro do closure
-      const stateRef = { current: state };
-      const unsub = subscribe((s) => {
-        stateRef.current = s;
+      // 3) Services de rota
+      directionsSvcRef.current = new google.maps.DirectionsService();
+      directionsRef.current = new google.maps.DirectionsRenderer({
+        map: mapRef.current!,
+        suppressMarkers: true, // usaremos nossos markers
       });
 
-      // Se quiser tentativa de rota ao iniciar quando já há defaults
-      setTimeout(async () => {
-        if (defaultOrigin && originInputRef.current) {
-          const { results } = await geocoder.geocode({ address: defaultOrigin });
-          const r = results?.[0];
-          if (r?.geometry?.location) {
-            pushChange({
-              origin: {
-                address: r.formatted_address,
-                location: { lat: r.geometry.location.lat(), lng: r.geometry.location.lng() },
-              },
-            });
-          }
+      // 4) Autocomplete (origem/destino)
+      const originInput = document.getElementById(
+        "origin-input"
+      ) as HTMLInputElement | null;
+      const destInput = document.getElementById(
+        "destination-input"
+      ) as HTMLInputElement | null;
+
+      const originAC =
+        originInput && new Autocomplete(originInput, { fields: ["geometry", "formatted_address"] });
+      const destAC =
+        destInput && new Autocomplete(destInput, { fields: ["geometry", "formatted_address"] });
+
+      originAC?.addListener("place_changed", async () => {
+        const place = originAC.getPlace();
+        const loc = place?.geometry?.location;
+        if (!loc) return;
+
+        const point = { lat: loc.lat(), lng: loc.lng() };
+        originPointRef.current = point;
+        const addr = place.formatted_address || (await geocodeLatLng(point));
+        setOriginText(addr);
+        onOriginChange({ ...point, address: addr });
+
+        // mostra marker de origem enquanto não tiver rota
+        originMarkerRef.current?.setMap(null);
+        originMarkerRef.current = new Marker({
+          map: mapRef.current!,
+          position: point,
+          label: "A",
+        });
+
+        drawRouteIfPossible();
+      });
+
+      destAC?.addListener("place_changed", async () => {
+        const place = destAC.getPlace();
+        const loc = place?.geometry?.location;
+        if (!loc) return;
+
+        const point = { lat: loc.lat(), lng: loc.lng() };
+        destinationPointRef.current = point;
+        const addr = place.formatted_address || (await geocodeLatLng(point));
+        setDestinationText(addr);
+        onDestinationChange({ ...point, address: addr });
+
+        destinationMarkerRef.current?.setMap(null);
+        destinationMarkerRef.current = new Marker({
+          map: mapRef.current!,
+          position: point,
+          label: "B",
+        });
+
+        drawRouteIfPossible();
+      });
+
+      // 5) Click no mapa para preencher origem/destino em sequência
+      mapRef.current.addListener("click", async (e: google.maps.MapMouseEvent) => {
+        const latLng = e.latLng;
+        if (!latLng) return;
+        const point = { lat: latLng.lat(), lng: latLng.lng() };
+
+        // Se não tem origem -> define origem; senão define destino
+        if (!originPointRef.current) {
+          originPointRef.current = point;
+          const addr = await geocodeLatLng(point);
+          setOriginText(addr);
+          onOriginChange({ ...point, address: addr });
+
+          originMarkerRef.current?.setMap(null);
+          originMarkerRef.current = new Marker({
+            map: mapRef.current!,
+            position: point,
+            label: "A",
+          });
+        } else {
+          destinationPointRef.current = point;
+          const addr = await geocodeLatLng(point);
+          setDestinationText(addr);
+          onDestinationChange({ ...point, address: addr });
+
+          destinationMarkerRef.current?.setMap(null);
+          destinationMarkerRef.current = new Marker({
+            map: mapRef.current!,
+            position: point,
+            label: "B",
+          });
         }
-        if (defaultDestination && destInputRef.current) {
-          const { results } = await geocoder.geocode({ address: defaultDestination });
-          const r = results?.[0];
-          if (r?.geometry?.location) {
-            pushChange({
-              destination: {
-                address: r.formatted_address,
-                location: { lat: r.geometry.location.lat(), lng: r.geometry.location.lng() },
-              },
-            });
-          }
-        }
-      }, 0);
 
-      return () => {
-        unsub();
-      };
-    }
+        drawRouteIfPossible();
+      });
+    })();
 
-    // simples “pub-sub” local para termos o estado mais atual no tryRoute
-    const listeners = new Set<(s: RouteValue) => void>();
-    function subscribe(fn: (s: RouteValue) => void) {
-      listeners.add(fn);
-      return () => listeners.delete(fn);
-    }
-    function notifyAll(s: RouteValue) {
-      listeners.forEach((l) => l(s));
-    }
-
-    const stopWatch = () => {};
-    init();
-
-    // sempre que state muda, notifica quem quer reagir (p/ tryRoute)
-    // (não usa dependency do React aqui, para evitar reconfigurar o mapa)
-    const obs = (s: RouteValue) => {};
-    listeners.add(obs);
     return () => {
       mounted = false;
-      listeners.clear();
-      stopWatch();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [onOriginChange, onDestinationChange, onDistanceChange]);
 
-  // notifica subscritos
-  useEffect(() => {
-    // @ts-ignore – uso local do notify simples
-    if (typeof window !== "undefined" && (window as any).__notifyRoute) {
-      (window as any).__notifyRoute(state);
-    }
-  }, [state]);
-
-  // hack simples para expor notify em window
-  if (typeof window !== "undefined" && !(window as any).__notifyRoute) {
-    (window as any).__notifyRoute = (s: RouteValue) => {};
-  }
-  const notifyRef = useRef<(s: RouteValue) => void>();
-  useEffect(() => {
-    const fn = (s: RouteValue) => notifyRef.current?.(s);
-    // @ts-ignore
-    (window as any).__notifyRoute = fn;
-  }, []);
-
-  // handler público para clicar “Usar localização atual”
-  async function useMyLocation() {
-    if (!navigator.geolocation) return;
+  // Geolocalização para origem
+  const handleUseMyLocation = () => {
+    if (!navigator.geolocation || !mapRef.current) return;
     navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude } = pos.coords;
-        // reverse geocode
-        const loader = new Loader({
-          apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
-          libraries: ["places"],
+      async ({ coords }) => {
+        const point = { lat: coords.latitude, lng: coords.longitude };
+        const addr = await geocodeLatLng(point);
+        setOriginText(addr);
+        onOriginChange({ ...point, address: addr });
+
+        originPointRef.current = point;
+        originMarkerRef.current?.setMap(null);
+        originMarkerRef.current = new google.maps.Marker({
+          map: mapRef.current!,
+          position: point,
+          label: "A",
         });
-        await loader.load();
-        const { Geocoder } = (await google.maps.importLibrary("geocoding")) as google.maps.GeocodingLibrary;
-        const geocoder = new Geocoder();
-        geocoder.geocode({ location: { lat: latitude, lng: longitude } }, (res) => {
-          const address = res?.[0]?.formatted_address || "Minha localização";
-          pushChange({
-            origin: { address, location: { lat: latitude, lng: longitude } },
-          });
-        });
+
+        // centraliza no usuário
+        mapRef.current!.setCenter(point);
+        mapRef.current!.setZoom(14);
+
+        // tenta desenhar rota caso já exista destino
+        drawRouteIfPossible();
       },
       () => {
-        // silencioso
-      }
+        // ignore errors silently
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
     );
-  }
-
-  const km =
-    state.distanceMeters != null
-      ? (state.distanceMeters / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 2 })
-      : null;
+  };
 
   return (
-    <div className="w-full space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="flex items-center gap-2">
-          <input
-            ref={originInputRef}
-            placeholder="Origem (digite e selecione)"
-            className="w-full px-3 py-2 rounded-lg border border-white/15 bg-black/30 text-white placeholder-white/40"
-          />
-          <button
-            type="button"
-            onClick={useMyLocation}
-            className="shrink-0 bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-white"
-            title="Usar minha localização"
-          >
-            Usar localização
-          </button>
-        </div>
-
+    <div className="space-y-3">
+      {/* Inputs */}
+      <div className="flex flex-col md:flex-row gap-2">
         <input
-          ref={destInputRef}
-          placeholder="Destino (digite e selecione)"
-          className="w-full px-3 py-2 rounded-lg border border-white/15 bg-black/30 text-white placeholder-white/40"
+          id="origin-input"
+          className="flex-1 bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
+          placeholder="Origem (digite e selecione)"
+          value={originText}
+          onChange={(e) => setOriginText(e.target.value)}
         />
+        <button
+          type="button"
+          onClick={handleUseMyLocation}
+          className="px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white"
+        >
+          Usar localização
+        </button>
       </div>
 
-      {km && (
-        <div className="text-sm text-white/80">
-          Distância estimada: <span className="font-semibold">{km} km</span>
-        </div>
-      )}
+      <input
+        id="destination-input"
+        className="w-full bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
+        placeholder="Destino (digite e selecione)"
+        value={destinationText}
+        onChange={(e) => setDestinationText(e.target.value)}
+      />
 
-      <div ref={mapRef} className="h-96 w-full rounded-2xl overflow-hidden bg-black/10" />
+      {/* Mapa */}
+      <div
+        ref={mapDivRef}
+        className="h-96 w-full rounded-2xl overflow-hidden bg-black/10"
+      />
     </div>
   );
 }
