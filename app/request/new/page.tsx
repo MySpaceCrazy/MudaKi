@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
@@ -10,11 +10,12 @@ import { Loader } from "@googlemaps/js-api-loader";
 const MapRoute = dynamic(() => import("@/components/MapRoute"), { ssr: false });
 
 type Place = { lat: number; lng: number; address?: string };
+type Suggestion = { description: string; place_id: string };
 
 export default function NewRequest() {
   const router = useRouter();
 
-  // inputs de autocomplete
+  // refs dos inputs
   const originInputRef = useRef<HTMLInputElement | null>(null);
   const destInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -22,17 +23,49 @@ export default function NewRequest() {
   const [origin, setOrigin] = useState<Place | null>(null);
   const [destination, setDestination] = useState<Place | null>(null);
 
-  // distância/tempo (do MapRoute)
+  // distância/tempo
   const [distanceMeters, setDistanceMeters] = useState<number>(0);
   const [distanceText, setDistanceText] = useState<string>("—");
   const [durationText, setDurationText] = useState<string | undefined>(undefined);
 
-  // demais campos
+  // formulário extra
   const [date, setDate] = useState<string>("");
   const [helpers, setHelpers] = useState<boolean>(false);
   const [items, setItems] = useState<string>("");
 
-  // inicia Autocomplete + viés regional pela geolocalização
+  // infra do autocomplete por serviço
+  const servicesRef = useRef<{
+    autoSvc: google.maps.places.AutocompleteService | null;
+    placesSvc: google.maps.places.PlacesService | null;
+    sessionTokenOrigin: google.maps.places.AutocompleteSessionToken | null;
+    sessionTokenDest: google.maps.places.AutocompleteSessionToken | null;
+    biasLocation: google.maps.LatLng | null;
+  }>({
+    autoSvc: null,
+    placesSvc: null,
+    sessionTokenOrigin: null,
+    sessionTokenDest: null,
+    biasLocation: null,
+  });
+
+  const [originSuggestions, setOriginSuggestions] = useState<Suggestion[]>([]);
+  const [destSuggestions, setDestSuggestions] = useState<Suggestion[]>([]);
+  const [openList, setOpenList] = useState<"origin" | "dest" | null>(null);
+
+  // debounce helper
+  const debounce = useMemo(
+    () =>
+      function <F extends (...args: any[]) => void>(fn: F, ms: number) {
+        let t: any;
+        return (...args: Parameters<F>) => {
+          clearTimeout(t);
+          t = setTimeout(() => fn(...args), ms);
+        };
+      },
+    []
+  );
+
+  // carrega Google + cria serviços + tenta viés regional
   useEffect(() => {
     (async () => {
       const loader = new Loader({
@@ -41,8 +74,16 @@ export default function NewRequest() {
       });
       await loader.load();
 
-      // tenta pegar localização p/ viés (não é obrigatório)
-      let userBounds: google.maps.LatLngBounds | undefined = undefined;
+      servicesRef.current.autoSvc = new google.maps.places.AutocompleteService();
+      // PlacesService precisa de um "node" dummy
+      const dummy = document.createElement("div");
+      servicesRef.current.placesSvc = new google.maps.places.PlacesService(dummy);
+      servicesRef.current.sessionTokenOrigin =
+        new google.maps.places.AutocompleteSessionToken();
+      servicesRef.current.sessionTokenDest =
+        new google.maps.places.AutocompleteSessionToken();
+
+      // viés por geolocalização (opcional)
       try {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
           if (!navigator.geolocation) return reject("Geoloc indisponível");
@@ -51,51 +92,101 @@ export default function NewRequest() {
             timeout: 7000,
           });
         });
-        const center = new google.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
-        const circle = new google.maps.Circle({ center, radius: 20000 }); // 20km
-        userBounds = circle.getBounds() ?? undefined;
+        servicesRef.current.biasLocation = new google.maps.LatLng(
+          pos.coords.latitude,
+          pos.coords.longitude
+        );
       } catch {
-        // ok, sem viés
-      }
-
-      // opções comuns
-      const opts: google.maps.places.AutocompleteOptions = {
-        fields: ["formatted_address", "geometry"],
-        types: ["geocode"],
-        componentRestrictions: { country: "br" },
-        // usamos setBounds abaixo; strictBounds=false => só viés (não restringe)
-        strictBounds: false,
-      };
-
-      // ORIGEM
-      if (originInputRef.current) {
-        const ac = new google.maps.places.Autocomplete(originInputRef.current, opts);
-        if (userBounds) ac.setBounds(userBounds);
-        ac.addListener("place_changed", () => {
-          const p = ac.getPlace();
-          const loc = p?.geometry?.location;
-          if (!loc) return;
-          const addr = p.formatted_address ?? originInputRef.current!.value;
-          setOrigin({ lat: loc.lat(), lng: loc.lng(), address: addr });
-        });
-      }
-
-      // DESTINO
-      if (destInputRef.current) {
-        const ac = new google.maps.places.Autocomplete(destInputRef.current, opts);
-        if (userBounds) ac.setBounds(userBounds);
-        ac.addListener("place_changed", () => {
-          const p = ac.getPlace();
-          const loc = p?.geometry?.location;
-          if (!loc) return;
-          const addr = p.formatted_address ?? destInputRef.current!.value;
-          setDestination({ lat: loc.lat(), lng: loc.lng(), address: addr });
-        });
+        servicesRef.current.biasLocation = null;
       }
     })();
   }, []);
 
-  // botão "Usar localização" preenche a ORIGEM e centraliza o viés do autocomplete
+  // busca previsões (origem/destino) — versão debounced
+  const fetchPredictions = debounce(
+    (which: "origin" | "dest", input: string) => {
+      const svc = servicesRef.current.autoSvc;
+      if (!svc || !input.trim()) {
+        if (which === "origin") setOriginSuggestions([]);
+        else setDestSuggestions([]);
+        return;
+      }
+
+      const opts: google.maps.places.AutocompletionRequest = {
+        input,
+        componentRestrictions: { country: ["br"] },
+        sessionToken:
+          which === "origin"
+            ? servicesRef.current.sessionTokenOrigin!
+            : servicesRef.current.sessionTokenDest!,
+        types: ["address"],
+      };
+
+      // aplica viés se houver
+      if (servicesRef.current.biasLocation) {
+        opts.location = servicesRef.current.biasLocation;
+        opts.radius = 20000; // 20 km
+      }
+
+      svc.getPlacePredictions(opts, (preds, status) => {
+        if (status !== google.maps.places.PlacesServiceStatus.OK || !preds) {
+          if (which === "origin") setOriginSuggestions([]);
+          else setDestSuggestions([]);
+          return;
+        }
+        const list = preds.map((p) => ({
+          description: p.description,
+          place_id: p.place_id!,
+        }));
+        if (which === "origin") setOriginSuggestions(list);
+        else setDestSuggestions(list);
+      });
+    },
+    220
+  );
+
+  // quando seleciona uma sugestão -> busca detalhes (lat/lng + address)
+  async function pickSuggestion(which: "origin" | "dest", s: Suggestion) {
+    const places = servicesRef.current.placesSvc;
+    if (!places) return;
+
+    const fields: google.maps.places.PlaceDetailsRequest = {
+      placeId: s.place_id,
+      fields: ["formatted_address", "geometry"],
+      sessionToken:
+        which === "origin"
+          ? servicesRef.current.sessionTokenOrigin!
+          : servicesRef.current.sessionTokenDest!,
+    };
+
+    places.getDetails(fields, (place, status) => {
+      if (status !== google.maps.places.PlacesServiceStatus.OK || !place?.geometry?.location)
+        return;
+
+      const addr = place.formatted_address ?? s.description;
+      const lat = place.geometry.location.lat();
+      const lng = place.geometry.location.lng();
+
+      if (which === "origin") {
+        if (originInputRef.current) originInputRef.current.value = addr;
+        setOrigin({ lat, lng, address: addr });
+        setOriginSuggestions([]);
+        setOpenList(null);
+        // nova sessão para próximas digitações
+        servicesRef.current.sessionTokenOrigin =
+          new google.maps.places.AutocompleteSessionToken();
+      } else {
+        if (destInputRef.current) destInputRef.current.value = addr;
+        setDestination({ lat, lng, address: addr });
+        setDestSuggestions([]);
+        setOpenList(null);
+        servicesRef.current.sessionTokenDest =
+          new google.maps.places.AutocompleteSessionToken();
+      }
+    });
+  }
+
+  // usar localização atual como origem (preenche input e estado)
   async function useMyLocation() {
     try {
       const coords = await new Promise<GeolocationPosition>((resolve, reject) => {
@@ -122,23 +213,15 @@ export default function NewRequest() {
       if (originInputRef.current) originInputRef.current.value = addr;
       setOrigin({ lat: latitude, lng: longitude, address: addr });
 
-      // reenviesa os autocompletes para a sua área
-      const center = new google.maps.LatLng(latitude, longitude);
-      const circle = new google.maps.Circle({ center, radius: 20000 });
-      const bounds = circle.getBounds();
-      if (bounds) {
-        // @ts-ignore – o construtor não expõe uma API p/ recuperar a instância do AC
-        originInputRef.current?.autocomplete?.setBounds?.(bounds);
-        // @ts-ignore
-        destInputRef.current?.autocomplete?.setBounds?.(bounds);
-      }
+      // atualiza viés de previsões para a sua área
+      servicesRef.current.biasLocation = new google.maps.LatLng(latitude, longitude);
     } catch (err) {
       console.warn("Falha ao obter localização:", err);
       alert("Não foi possível obter sua localização.");
     }
   }
 
-  // salvar no Firestore
+  // salvar
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -148,7 +231,6 @@ export default function NewRequest() {
       router.push("/auth");
       return;
     }
-
     if (!origin || !destination || !date) {
       alert("Preencha origem, destino e data.");
       return;
@@ -183,33 +265,89 @@ export default function NewRequest() {
 
       <form onSubmit={onSubmit} className="space-y-8">
         {/* ORIGEM + botão localização */}
-        <div className="grid grid-cols-1 md:grid-cols-[1fr,auto] gap-3 items-stretch">
-          <input
-            ref={originInputRef}
-            type="text"
-            placeholder="Origem (digite e selecione)"
-            className="w-full bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
-            autoComplete="off"
-          />
-          <button
-            type="button"
-            onClick={useMyLocation}
-            className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-medium"
-          >
-            Usar localização
-          </button>
+        <div className="relative">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr,auto] gap-3 items-stretch">
+            <input
+              ref={originInputRef}
+              type="text"
+              placeholder="Origem (digite e selecione)"
+              className="w-full bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
+              autoComplete="off"
+              onChange={(e) => {
+                setOpenList("origin");
+                fetchPredictions("origin", e.target.value);
+              }}
+              onFocus={(e) => {
+                if (e.currentTarget.value) {
+                  setOpenList("origin");
+                  fetchPredictions("origin", e.currentTarget.value);
+                }
+              }}
+            />
+            <button
+              type="button"
+              onClick={useMyLocation}
+              className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-medium"
+            >
+              Usar localização
+            </button>
+          </div>
+
+          {/* Dropdown de sugestões de ORIGEM */}
+          {openList === "origin" && originSuggestions.length > 0 && (
+            <div className="absolute z-20 mt-1 w-full max-w-[calc(100%-0px)] rounded-lg border border-white/10 bg-neutral-900/95 backdrop-blur p-1 shadow-lg">
+              {originSuggestions.map((s) => (
+                <button
+                  key={s.place_id}
+                  type="button"
+                  className="block w-full text-left px-3 py-2 rounded-md hover:bg-white/5"
+                  onClick={() => pickSuggestion("origin", s)}
+                >
+                  {s.description}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* DESTINO */}
-        <input
-          ref={destInputRef}
-          type="text"
-          placeholder="Destino (digite e selecione)"
-          className="w-full bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
-          autoComplete="off"
-        />
+        <div className="relative">
+          <input
+            ref={destInputRef}
+            type="text"
+            placeholder="Destino (digite e selecione)"
+            className="w-full bg-neutral-900 border border-white/10 rounded-lg px-3 py-2 outline-none"
+            autoComplete="off"
+            onChange={(e) => {
+              setOpenList("dest");
+              fetchPredictions("dest", e.target.value);
+            }}
+            onFocus={(e) => {
+              if (e.currentTarget.value) {
+                setOpenList("dest");
+                fetchPredictions("dest", e.currentTarget.value);
+              }
+            }}
+          />
 
-        {/* Mapa/rota + distância no badge */}
+          {/* Dropdown de sugestões de DESTINO */}
+          {openList === "dest" && destSuggestions.length > 0 && (
+            <div className="absolute z-20 mt-1 w-full rounded-lg border border-white/10 bg-neutral-900/95 backdrop-blur p-1 shadow-lg">
+              {destSuggestions.map((s) => (
+                <button
+                  key={s.place_id}
+                  type="button"
+                  className="block w-full text-left px-3 py-2 rounded-md hover:bg-white/5"
+                  onClick={() => pickSuggestion("dest", s)}
+                >
+                  {s.description}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Mapa/rota */}
         <MapRoute
           origin={origin}
           destination={destination}

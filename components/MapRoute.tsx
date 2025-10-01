@@ -16,17 +16,13 @@ export default function MapRoute({
 }) {
   const mapDivRef = useRef<HTMLDivElement | null>(null);
 
-  // instâncias do Maps
   const mapRef = useRef<google.maps.Map | null>(null);
   const directionsSvcRef = useRef<google.maps.DirectionsService | null>(null);
   const directionsRef = useRef<google.maps.DirectionsRenderer | null>(null);
   const startMarkerRef = useRef<google.maps.Marker | null>(null);
   const endMarkerRef = useRef<google.maps.Marker | null>(null);
-
-  // badge de distância/tempo
   const distanceCtrlRef = useRef<HTMLDivElement | null>(null);
 
-  // init
   useEffect(() => {
     if (!mapDivRef.current) return;
 
@@ -40,10 +36,8 @@ export default function MapRoute({
       const { Map } = (await google.maps.importLibrary("maps")) as google.maps.MapsLibrary;
       const { DirectionsService, DirectionsRenderer } =
         (await google.maps.importLibrary("routes")) as google.maps.RoutesLibrary;
-      const { Marker } =
-        (await google.maps.importLibrary("marker")) as google.maps.MarkerLibrary;
+      const { Marker } = (await google.maps.importLibrary("marker")) as google.maps.MarkerLibrary;
 
-      // centro padrão (SP)
       const center = { lat: -23.55052, lng: -46.633308 };
 
       mapRef.current = new Map(mapDivRef.current as HTMLElement, {
@@ -58,11 +52,7 @@ export default function MapRoute({
       directionsRef.current = new DirectionsRenderer({
         map: mapRef.current!,
         suppressMarkers: true,
-        polylineOptions: {
-          strokeColor: "#7c3aed",
-          strokeOpacity: 0.9,
-          strokeWeight: 6,
-        },
+        polylineOptions: { strokeColor: "#7c3aed", strokeOpacity: 0.9, strokeWeight: 6 },
       });
 
       startMarkerRef.current = new Marker({
@@ -76,7 +66,6 @@ export default function MapRoute({
           strokeWeight: 2,
         },
       });
-
       endMarkerRef.current = new Marker({
         map: mapRef.current!,
         icon: {
@@ -89,7 +78,6 @@ export default function MapRoute({
         },
       });
 
-      // badge Distância/Tempo no topo do mapa
       const ctrl = document.createElement("div");
       ctrl.style.padding = "8px 14px";
       ctrl.style.borderRadius = "999px";
@@ -107,7 +95,6 @@ export default function MapRoute({
     })();
   }, []);
 
-  // atualiza mapa/rota
   useEffect(() => {
     const svc = directionsSvcRef.current;
     const renderer = directionsRef.current;
@@ -115,7 +102,6 @@ export default function MapRoute({
 
     if (!map) return;
 
-    // 1) Sem origem e destino -> só limpa tudo
     if (!origin && !destination) {
       renderer?.set("directions", null as any);
       distanceCtrlRef.current && (distanceCtrlRef.current.innerText = "Distância: —");
@@ -124,7 +110,6 @@ export default function MapRoute({
       return;
     }
 
-    // 2) Só ORIGEM -> centraliza no ponto e coloca o marcador verde
     if (origin && !destination) {
       renderer?.set("directions", null as any);
       distanceCtrlRef.current && (distanceCtrlRef.current.innerText = "Distância: —");
@@ -139,7 +124,6 @@ export default function MapRoute({
       return;
     }
 
-    // 3) ORIGEM + DESTINO -> calcula rota
     if (!svc || !renderer || !origin || !destination) return;
 
     svc.route(
@@ -190,10 +174,5 @@ export default function MapRoute({
     );
   }, [origin, destination, onDistance]);
 
-  return (
-    <div
-      ref={mapDivRef}
-      className="h-80 w-full rounded-2xl overflow-hidden bg-black/10"
-    />
-  );
+  return <div ref={mapDivRef} className="h-80 w-full rounded-2xl overflow-hidden bg-black/10" />;
 }
