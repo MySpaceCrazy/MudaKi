@@ -1,100 +1,64 @@
-// components/MapPicker.tsx
 "use client";
 
 import { useEffect, useRef } from "react";
-
-type MapsLib = google.maps.MapsLibrary;
-type PlacesLib = google.maps.PlacesLibrary;
+import { setKey, setLibraries, importLibrary } from "@googlemaps/js-api-loader";
 
 export default function MapPicker({
   onChange,
-  initialCenter = { lat: -23.55052, lng: -46.633308 }, // São Paulo
-  initialZoom = 12,
 }: {
   onChange: (v: { lat: number; lng: number; address: string }) => void;
-  initialCenter?: { lat: number; lng: number };
-  initialZoom?: number;
 }) {
   const mapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!mapRef.current) return;
 
-    let map: google.maps.Map | null = null;
-    let marker: google.maps.Marker | null = null;
-    let clickListener: google.maps.MapsEventListener | null = null;
+    const init = async () => {
+      // ✅ Defina a chave e as bibliotecas antes de importar
+      setKey(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string);
+      setLibraries(["places"]);
 
-    async function init() {
-      // 1) Configura a chave e libraries (API funcional)
-      // @ts-ignore: objeto global após carregamento do script no layout
-      google.maps.setOptions({
-        apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY,
-        libraries: ["places"],
-      });
+      // ✅ Importe as libs de forma funcional (API nova)
+      const { Map } = (await importLibrary("maps")) as google.maps.MapsLibrary;
+      const { Marker } = (await importLibrary("marker")) as google.maps.MarkerLibrary;
+      const { Geocoder } = (await importLibrary("geocoding")) as google.maps.GeocodingLibrary;
 
-      // 2) Carrega as libraries necessárias
-      const [{ Map }, _placesLib] = (await Promise.all([
-        // @ts-ignore
-        google.maps.importLibrary("maps") as Promise<MapsLib>,
-        // @ts-ignore
-        google.maps.importLibrary("places") as Promise<PlacesLib>,
-      ])) as [MapsLib, PlacesLib];
+      const center = { lat: -23.55052, lng: -46.633308 };
 
-      // 3) Cria o mapa
-      map = new Map(mapRef.current as HTMLElement, {
-        center: initialCenter,
-        zoom: initialZoom,
+      const map = new Map(mapRef.current!, {
+        center,
+        zoom: 12,
         disableDefaultUI: false,
       });
 
-      // 4) Marcador
-      marker = new google.maps.Marker({
-        position: initialCenter,
+      const marker = new Marker({
+        position: center,
         map,
-        draggable: false, // deixe true se quiser arrastar
+        draggable: true,
       });
 
-      const geocoder = new google.maps.Geocoder();
+      const geocoder = new Geocoder();
 
-      // Função padrão para atualizar endereço e avisar o pai
-      const pushChange = async (lat: number, lng: number) => {
-        let address = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-        try {
-          const { results } = await geocoder.geocode({ location: { lat, lng } });
-          if (results?.[0]?.formatted_address) {
-            address = results[0].formatted_address;
-          }
-        } catch {
-          // mantém o fallback
-        }
-        onChange({ lat, lng, address });
+      const update = async (pos: google.maps.LatLng) => {
+        const { results } = await geocoder.geocode({ location: pos });
+        const address = results?.[0]?.formatted_address ?? "";
+        onChange({ lat: pos.lat(), lng: pos.lng(), address });
       };
 
-      // 5) Clique no mapa -> move marcador + reverse geocoding
-      clickListener = map.addListener("click", async (e: google.maps.MapMouseEvent) => {
-        if (!e.latLng) return;
-        const lat = e.latLng.lat();
-        const lng = e.latLng.lng();
-
-        marker!.setPosition({ lat, lng });
-        map!.panTo({ lat, lng });
-
-        await pushChange(lat, lng);
+      marker.addListener("dragend", () => update(marker.getPosition()!));
+      map.addListener("click", (e: google.maps.MapMouseEvent) => {
+        if (e.latLng) {
+          marker.setPosition(e.latLng);
+          update(e.latLng);
+        }
       });
 
-      // Dispara o valor inicial
-      await pushChange(initialCenter.lat, initialCenter.lng);
-    }
-
-    init().catch(console.error);
-
-    // cleanup
-    return () => {
-      if (clickListener) clickListener.remove();
-      marker = null;
-      map = null;
+      // Primeira leitura
+      update(marker.getPosition()!);
     };
-  }, [initialCenter, initialZoom, onChange]);
+
+    init();
+  }, [onChange]);
 
   return (
     <div
