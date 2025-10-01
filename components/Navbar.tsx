@@ -8,17 +8,35 @@ export default function Navbar() {
       <div className="container mx-auto flex items-center justify-between px-4 py-3">
         <Link href="/" className="flex items-center gap-3">
           <Image
-            src="/logo-sig.png"
+            src="/mudaki-logo.jpg"
             alt="Logo Mudaki"
-            width={120}
-            height={120}
+            width={60}
+            height={60}
             className="rounded-full object-contain"
             priority
           />
           <span className="font-bold text-xl text-white">MUDAKI</span>
         </Link>
+
         <nav className="flex items-center gap-4">
-          <Link href="/auth" className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+          <Link
+            href="/privacidade.html"
+            className="text-sm text-white/80 hover:text-white"
+            target="_blank"
+          >
+            Privacidade
+          </Link>
+          <Link
+            href="/termos.html"
+            className="text-sm text-white/80 hover:text-white"
+            target="_blank"
+          >
+            Termos
+          </Link>
+          <Link
+            href="/auth"
+            className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
+          >
             Entrar
           </Link>
         </nav>
