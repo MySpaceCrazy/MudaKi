@@ -10,8 +10,8 @@ export default function Navbar() {
           <Image
             src="/mudaki-logo.jpg"
             alt="Logo Mudaki"
-            width={40}
-            height={40}
+            width={60}
+            height={60}
             className="rounded-full object-contain"
             priority
           />
