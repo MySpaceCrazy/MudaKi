@@ -35,6 +35,9 @@ export default function AuthPage() {
         window.recaptchaVerifier = new RecaptchaVerifier(auth, "recaptcha-container", {
           size: "invisible",
         });
+        // Log para confirmar inicialização
+        // @ts-ignore
+        console.log("recaptchaVerifier ready:", window.recaptchaVerifier);
       }
       recaptchaReadyRef.current = true;
     } catch (e) {
@@ -78,6 +81,13 @@ export default function AuthPage() {
         });
         // @ts-ignore
         window.recaptchaVerifier = appVerifier;
+        console.log("recaptchaVerifier re-criado:", appVerifier);
+      }
+
+      // Apenas para inspeção em produção: confirma que o script do reCAPTCHA está carregado
+      // @ts-ignore
+      if (typeof window.grecaptcha === "undefined") {
+        console.warn("grecaptcha ainda não está disponível no window.");
       }
 
       const result = (await signInWithPhoneNumber(
@@ -91,20 +101,24 @@ export default function AuthPage() {
       window._confirmationResult = result;
       setCodeSent(true);
       setMsg("SMS enviado! Confira o código no seu telefone.");
+      console.log("SMS enviado para:", e164);
     } catch (err: any) {
-      // 🔎 Log detalhado pro console do browser (ajuda a debugar no Vercel)
-      console.error("sendSMS error:", err?.code, err?.message);
+      // 🔎 Log detalhado no console (importante para ver o code/message no Vercel)
+      console.error("sendSMS error:", err?.code, err?.message, err);
 
-      // Tenta resetar o widget invisível se existir
+      // Tenta resetar o widget invisível (alguns erros pedem novo token)
       try {
         // @ts-ignore
         const widgetId = await window.recaptchaVerifier?.render?.();
         // @ts-ignore
-        if (typeof window.grecaptcha?.reset === "function") {
+        if (typeof window.grecaptcha?.reset === "function" && widgetId != null) {
           // @ts-ignore
           window.grecaptcha.reset(widgetId);
+          console.log("reCAPTCHA resetado (widgetId:", widgetId, ")");
         }
-      } catch {}
+      } catch (resetErr) {
+        console.warn("Falha ao resetar reCAPTCHA:", resetErr);
+      }
 
       // Mensagens mais amigáveis por código
       let friendly = "Não foi possível enviar o SMS. Verifique o número e tente de novo.";
@@ -117,16 +131,21 @@ export default function AuthPage() {
           friendly = "Falha no reCAPTCHA. Recarregue a página e tente de novo.";
           break;
         case "auth/too-many-requests":
-          friendly = "Muitas tentativas. Aguarde um pouco e tente novamente.";
+          friendly = "Muitas tentativas. Aguarde alguns minutos e tente novamente.";
           break;
         case "auth/quota-exceeded":
-          friendly = "Limite de envio de SMS excedido por enquanto. Tente mais tarde.";
+          friendly = "Limite de envio de SMS excedido por enquanto. Tente novamente mais tarde.";
           break;
         case "auth/network-request-failed":
           friendly = "Falha de rede. Verifique sua conexão e tente novamente.";
           break;
+        case "auth/unauthorized-domain":
+          friendly = "Domínio não autorizado no Firebase Authentication.";
+          break;
       }
-      setError(friendly);
+
+      // Exibe friendly + código (para facilitar debug visual)
+      setError(`${friendly}${err?.code ? ` [${err.code}]` : ""}`);
     } finally {
       setLoading(false);
     }
@@ -149,9 +168,10 @@ export default function AuthPage() {
       const confirmation: ConfirmationResult = window._confirmationResult;
       const cred = await confirmation.confirm(code);
       setMsg(`Autenticado! Bem-vindo, ${cred.user.phoneNumber ?? "usuário"}.`);
+      console.log("Login por SMS OK:", cred.user.uid, cred.user.phoneNumber);
     } catch (err: any) {
-      console.error("confirmCode error:", err?.code, err?.message);
-      setError("Código inválido. Tente novamente.");
+      console.error("confirmCode error:", err?.code, err?.message, err);
+      setError(`Código inválido. Tente novamente.${err?.code ? ` [${err.code}]` : ""}`);
     } finally {
       setLoading(false);
     }
@@ -165,9 +185,10 @@ export default function AuthPage() {
       setLoading(true);
       await signInWithPopup(auth, new GoogleAuthProvider());
       setMsg("Autenticado com Google!");
+      console.log("Login Google OK");
     } catch (err: any) {
-      console.error("googleSignIn error:", err?.code, err?.message);
-      setError("Falha no login com Google.");
+      console.error("googleSignIn error:", err?.code, err?.message, err);
+      setError(`Falha no login com Google.${err?.code ? ` [${err.code}]` : ""}`);
     } finally {
       setLoading(false);
     }
