@@ -1,28 +1,38 @@
+// app/request/new/page.tsx
 "use client";
+
 import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
-// Carrega o mapa só no cliente
-const MapPicker = dynamic(() => import("@/components/MapPicker"), { ssr: false });
+// Carrega o componente do mapa só no cliente
+const MapRoute = dynamic(() => import("@/components/MapRoute"), { ssr: false });
+// Tipagem do valor emitido pelo MapRoute
+import type { RouteValue } from "@/components/MapRoute";
 
 type Place = { lat: number; lng: number; address: string };
 
 export default function NewRequest() {
   const router = useRouter();
 
-  const [origin, setOrigin] = useState<Place | null>(null);
-  const [destination, setDestination] = useState<Place | null>(null);
+  // Estado emitido pelo MapRoute
+  const [route, setRoute] = useState<RouteValue>({
+    origin: null,
+    destination: null,
+    distanceMeters: null,
+  });
+
+  // Demais campos do formulário
   const [date, setDate] = useState<string>("");
   const [helpers, setHelpers] = useState<boolean>(false);
   const [items, setItems] = useState<string>("");
 
-  const onSubmit = async (e: React.FormEvent) => {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
 
-    // Precisa estar logado
+    // Requer login
     const user = auth.currentUser;
     if (!user) {
       alert("Faça login para criar a solicitação.");
@@ -30,16 +40,37 @@ export default function NewRequest() {
       return;
     }
 
-    if (!origin || !destination || !date) {
-      alert("Preencha origem, destino e data.");
+    // Validações mínimas
+    if (!route.origin || !route.destination) {
+      alert("Preencha origem e destino (use os campos acima do mapa).");
+      return;
+    }
+    if (!date) {
+      alert("Preencha a data da mudança.");
       return;
     }
 
     try {
-      const docRef = await addDoc(collection(db, "requests"), {
+      await addDoc(collection(db, "requests"), {
         userId: user.uid,
-        origin,
-        destination,
+        // Guarda estrutura simplificada (igual à que você já usa)
+        origin: {
+          address: route.origin.address,
+          lat: route.origin.location.lat,
+          lng: route.origin.location.lng,
+        } as Place,
+        destination: {
+          address: route.destination.address,
+          lat: route.destination.location.lat,
+          lng: route.destination.location.lng,
+        } as Place,
+        // distância total em metros + km como string para facilitar uso em listas
+        distanceMeters: route.distanceMeters ?? null,
+        distanceKm:
+          route.distanceMeters != null
+            ? +(route.distanceMeters / 1000).toFixed(2)
+            : null,
+
         date,
         helpers,
         items,
@@ -48,44 +79,50 @@ export default function NewRequest() {
       });
 
       alert("Solicitação criada com sucesso!");
-      // redireciona (p/ futuro podemos ir para /request/[id])
       router.push("/");
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
       alert("Erro ao salvar. Confira suas chaves do Firebase e tente novamente.");
     }
-  };
+  }
+
+  const distanceKm =
+    route.distanceMeters != null
+      ? (route.distanceMeters / 1000).toLocaleString("pt-BR", {
+          maximumFractionDigits: 2,
+        })
+      : null;
 
   return (
     <div className="max-w-3xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Nova solicitação</h1>
 
       <form onSubmit={onSubmit} className="space-y-8">
-        {/* ORIGEM */}
-        <div>
-          <h2 className="font-semibold mb-2">Origem</h2>
-          <MapPicker onChange={setOrigin} />
-          {origin && (
-            <p className="text-sm text-white/70 mt-2">
-              {origin.address}
-            </p>
-          )}
-        </div>
+        {/* MAPA ÚNICO: Origem/Destino + rota + distância */}
+        <div className="space-y-3">
+          <MapRoute onChange={setRoute} />
 
-        {/* DESTINO */}
-        <div>
-          <h2 className="font-semibold mb-2">Destino</h2>
-          <MapPicker onChange={setDestination} />
-          {destination && (
-            <p className="text-sm text-white/70 mt-2">
-              {destination.address}
-            </p>
-          )}
+          <div className="text-sm text-white/70 space-y-1">
+            <div>
+              <span className="text-white/50">Origem:</span>{" "}
+              {route.origin?.address ?? "—"}
+            </div>
+            <div>
+              <span className="text-white/50">Destino:</span>{" "}
+              {route.destination?.address ?? "—"}
+            </div>
+            <div>
+              <span className="text-white/50">Distância:</span>{" "}
+              {distanceKm ? `${distanceKm} km` : "—"}
+            </div>
+          </div>
         </div>
 
         {/* DATA */}
         <div>
-          <label htmlFor="date" className="block text-sm mb-1">Data da mudança</label>
+          <label htmlFor="date" className="block text-sm mb-1">
+            Data da mudança
+          </label>
           <input
             id="date"
             name="date"
@@ -125,7 +162,9 @@ export default function NewRequest() {
           <label htmlFor="helpers">Precisa de ajudantes</label>
         </div>
 
-        <button type="submit" className="btn">Salvar</button>
+        <button type="submit" className="btn">
+          Salvar
+        </button>
 
         <p className="text-white/60 text-sm">
           Após salvar, motoristas verão sua solicitação e poderão enviar propostas.
