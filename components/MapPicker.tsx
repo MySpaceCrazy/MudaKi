@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { setOptions } from "@googlemaps/js-api-loader";
+import { Loader } from "@googlemaps/js-api-loader";
 
 type MapValue = { lat: number; lng: number; address: string };
 
@@ -13,21 +13,21 @@ export default function MapPicker({
   const mapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!mapRef.current || typeof window === "undefined") return;
+    if (!mapRef.current) return;
 
     const init = async () => {
-      // 1) Configura API Key + libs (cast para contornar tipos do pacote)
-      setOptions({
+      // 1) Carrega Google Maps com o Loader (v1.x)
+      const loader = new Loader({
         apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY as string,
         libraries: ["places"],
-      } as any);
+      });
 
-      // 2) Importa as libs usando a API funcional
-      const [{ Map }, { Marker }, { Geocoder }] = await Promise.all([
-        google.maps.importLibrary("maps") as Promise<typeof google.maps>,
-        google.maps.importLibrary("marker") as Promise<typeof google.maps>,
-        google.maps.importLibrary("geocoding") as Promise<typeof google.maps>,
-      ]);
+      await loader.load(); // habilita window.google
+
+      // 2) Importa libs de forma funcional (já disponível após loader.load())
+      const { Map } = (await google.maps.importLibrary("maps")) as google.maps.MapsLibrary;
+      const { Marker } = (await google.maps.importLibrary("marker")) as google.maps.MarkerLibrary;
+      const { Geocoder } = (await google.maps.importLibrary("geocoding")) as google.maps.GeocodingLibrary;
 
       const center = { lat: -23.55052, lng: -46.633308 };
 
@@ -45,33 +45,27 @@ export default function MapPicker({
 
       const geocoder = new Geocoder();
 
-      const update = (pos: google.maps.LatLng | google.maps.LatLngLiteral) => {
-        const loc =
-          pos instanceof google.maps.LatLng ? pos : new google.maps.LatLng(pos);
-        geocoder.geocode({ location: loc }, (results, status) => {
-          const address =
-            status === "OK" ? results?.[0]?.formatted_address ?? "" : "";
-          onChange({ lat: loc.lat(), lng: loc.lng(), address });
+      const update = (pos: google.maps.LatLng | null) => {
+        if (!pos) return;
+        geocoder.geocode({ location: pos }, (res) => {
+          const address = res?.[0]?.formatted_address ?? "";
+          onChange({ lat: pos.lat(), lng: pos.lng(), address });
         });
       };
 
-      marker.addListener("dragend", () => update(marker.getPosition()!));
+      marker.addListener("dragend", () => update(marker.getPosition()));
       map.addListener("click", (e: google.maps.MapMouseEvent) => {
         if (!e.latLng) return;
         marker.setPosition(e.latLng);
         update(e.latLng);
       });
 
-      update(marker.getPosition()!);
+      // dispara 1ª leitura
+      update(marker.getPosition());
     };
 
     init();
   }, [onChange]);
 
-  return (
-    <div
-      ref={mapRef}
-      className="h-80 w-full rounded-2xl overflow-hidden bg-black/10"
-    />
-  );
+  return <div ref={mapRef} className="h-80 w-full rounded-2xl overflow-hidden bg-black/10" />;
 }

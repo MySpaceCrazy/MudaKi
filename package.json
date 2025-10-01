@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@googlemaps/js-api-loader": "^2.8.8",
+    "@googlemaps/js-api-loader": "^1.16.8",
     "@radix-ui/react-label": "latest",
     "firebase": "latest",
     "lucide-react": "latest",
